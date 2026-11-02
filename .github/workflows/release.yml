@@ -73,7 +73,7 @@ jobs:
           name="deploy-server_${VERSION}_${GOOS}_${GOARCH}"
           mkdir -p dist
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${name}/deploy-server" .
-          cp README.md SECURITY.md docker-compose.example.yml "dist/${name}/"
+          cp LICENSE README.md SECURITY.md docker-compose.example.yml "dist/${name}/"
           cp -r examples "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
@@ -129,6 +129,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=deploy-server
             org.opencontainers.image.description=GitLab OIDC authenticated docker compose deployment server
+            org.opencontainers.image.licenses=Apache-2.0
 
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

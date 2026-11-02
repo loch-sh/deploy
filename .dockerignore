@@ -14,9 +14,11 @@ docker-compose*.yml
 **/.env
 **/*.env
 
-# Docs, examples and build files
+# Docs, examples, CI and build files
 **/*.md
+LICENSE
 examples/
+.github/
 Dockerfile
 
 # Tests and test doubles (never compiled into the binary)

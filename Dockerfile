@@ -58,7 +58,7 @@ COPY --from=builder /deploy-server /usr/local/bin/deploy-server
 # revision, created and source from the git tag via docker/metadata-action).
 LABEL org.opencontainers.image.title="deploy-server" \
       org.opencontainers.image.description="GitLab OIDC authenticated docker compose deployment server" \
-      org.opencontainers.image.licenses="UNLICENSED"
+      org.opencontainers.image.licenses="Apache-2.0"
 
 # Documentation only: the port must NOT be published on the host; Traefik
 # reaches it over a dedicated internal network.

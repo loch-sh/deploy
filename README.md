@@ -24,6 +24,7 @@ The trust model, the controls and the residual risks are described in [SECURITY.
 - [Releases and CI](#releases-and-ci)
 - [Running tests](#running-tests)
 - [Directory layout](#directory-layout)
+- [License](#license)
 
 ---
 
@@ -751,7 +752,7 @@ Two GitHub Actions workflows live in [`.github/workflows`](.github/workflows):
 Pushing a tag such as `v1.0.0` produces:
 
 - **Container image** on GHCR, multi-arch (`linux/amd64`, `linux/arm64`), tagged `ghcr.io/<owner>/<repo>:v1.0.0`, `:1.0`, `:1` and `:latest`. A prerelease tag (`v1.1.0-rc1`) is published under its own tag only, without moving `latest`, `1.1` or `1`. The image carries OCI labels and annotations (version, revision, source), an SBOM and a SLSA provenance attestation pushed to the registry.
-- **Standalone binaries** attached to a GitHub Release: `deploy-server_v1.0.0_linux_amd64.tar.gz` and `deploy-server_v1.0.0_linux_arm64.tar.gz`, each containing the static binary, `README.md`, `SECURITY.md`, `docker-compose.example.yml` and `examples/`, with a `.sha256` file and a provenance attestation. Release notes are generated from the merged pull requests.
+- **Standalone binaries** attached to a GitHub Release: `deploy-server_v1.0.0_linux_amd64.tar.gz` and `deploy-server_v1.0.0_linux_arm64.tar.gz`, each containing the static binary, `LICENSE`, `README.md`, `SECURITY.md`, `docker-compose.example.yml` and `examples/`, with a `.sha256` file and a provenance attestation. Release notes are generated from the merged pull requests.
 
 ```bash
 git tag -a v1.0.0 -m "v1.0.0"
@@ -821,7 +822,14 @@ deploy-server/
 ├── Dockerfile                 # Multi-stage build, Alpine runtime with the docker CLI
 ├── docker-compose.example.yml # Example deployment behind Traefik
 ├── SECURITY.md                # Threat model, controls, residual risks
+├── LICENSE                    # Apache License 2.0
 └── data/                      # Runtime state (gitignored)
     ├── registry.json          # Deployment ownership
     └── autostop.json          # Scheduled stops
 ```
+
+---
+
+## License
+
+Copyright 2026 Loch.sh. Licensed under the [Apache License, Version 2.0](LICENSE); you may not use this project except in compliance with the License. Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" basis, without warranties or conditions of any kind.
