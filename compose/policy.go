@@ -66,7 +66,7 @@ func (e *PolicyError) Error() string {
 	b.WriteString("compose file rejected by deployment policy: ")
 	for i, v := range e.Violations {
 		if i == maxReportedViolations {
-			fmt.Fprintf(&b, "; … and %d more", len(e.Violations)-i)
+			b.WriteString(fmt.Sprintf("; … and %d more", len(e.Violations)-i))
 			break
 		}
 		if i > 0 {
@@ -84,11 +84,11 @@ func (vs *violations) add(scope, field, format string, args ...any) {
 	*vs = append(*vs, Violation{Scope: scope, Field: field, Reason: fmt.Sprintf(format, args...)})
 }
 
-func (vs violations) err() error {
-	if len(vs) == 0 {
+func (vs *violations) err() error {
+	if len(*vs) == 0 {
 		return nil
 	}
-	return &PolicyError{Violations: vs}
+	return &PolicyError{Violations: *vs}
 }
 
 // forbiddenServiceFields are service attributes that grant host access or

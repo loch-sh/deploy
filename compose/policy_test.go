@@ -2,6 +2,7 @@ package compose
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,8 +190,8 @@ func TestValidatePolicy_reportsEveryViolation(t *testing.T) {
 	doc := model(t, p, `{"services":{"a":{"privileged":true,"pid":"host"},"b":{"cap_add":["ALL"]}}}`)
 
 	err := ValidatePolicy(doc, p)
-	pe, ok := err.(*PolicyError)
-	if !ok || len(pe.Violations) != 3 {
+	var pe *PolicyError
+	if !errors.As(err, &pe) || len(pe.Violations) != 3 {
 		t.Fatalf("error = %#v, want 3 violations", err)
 	}
 	if pe.Violations[0].Scope != `service "a"` || pe.Violations[2].Scope != `service "b"` {
@@ -203,7 +204,11 @@ func TestPolicyError_capsReportedViolations(t *testing.T) {
 	for range maxReportedViolations + 5 {
 		vs.add("s", "f", "r")
 	}
-	msg := vs.err().Error()
+	err := vs.err()
+	if err == nil {
+		t.Fatal("err() = nil, want a *PolicyError")
+	}
+	msg := err.Error()
 	if !strings.Contains(msg, "and 5 more") || strings.Count(msg, "s: f: r") != maxReportedViolations {
 		t.Errorf("message = %q", msg)
 	}
@@ -258,11 +263,11 @@ func TestValidatePolicy_bindLayout(t *testing.T) {
 
 		// -- symlinks ---------------------------------------------------------
 		{"key directory is a symlink", func(t *testing.T, w string) {
-			real := w + "-real"
-			if err := os.Rename(w, real); err != nil {
+			realDir := w + "-real"
+			if err := os.Rename(w, realDir); err != nil {
 				t.Fatal(err)
 			}
-			symlink(t, real, w)
+			symlink(t, realDir, w)
 		}, "web/storage", "the stack's websites directory is a symbolic link"},
 		{"service directory is a symlink to the host root", func(t *testing.T, w string) { symlink(t, "/", filepath.Join(w, "evil")) }, "evil/etc", `component "evil" is a symbolic link`},
 		{"service directory is a symlink inside the tree", func(t *testing.T, w string) { symlink(t, filepath.Join(w, "web"), filepath.Join(w, "alias")) }, "alias/storage", `component "alias" is a symbolic link`},
@@ -373,16 +378,7 @@ func TestCheckSource(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckSource([]byte(tc.src))
-			if tc.want == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
+			assertErrContains(t, CheckSource([]byte(tc.src)), tc.want)
 		})
 	}
 }
@@ -401,16 +397,7 @@ func TestCheckDotEnv(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckDotEnv([]byte(tc.env))
-			if tc.want == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
+			assertErrContains(t, CheckDotEnv([]byte(tc.env)), tc.want)
 		})
 	}
 }
@@ -432,5 +419,20 @@ func TestHelpers(t *testing.T) {
 	}
 	if l := asList("a"); len(l) != 1 {
 		t.Error("asList scalar")
+	}
+}
+
+// assertErrContains fails t unless err is nil when want is empty, or err's
+// message contains want otherwise.
+func assertErrContains(t *testing.T, err error, want string) {
+	t.Helper()
+	if want == "" {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want %q", err, want)
 	}
 }

@@ -138,7 +138,7 @@ func TestAudit_statusAndErrorCapture(t *testing.T) {
 	audited := func(fn http.HandlerFunc) http.Handler { return Audit(newAuditLogger(&buf), nil)(fn) }
 
 	t.Run("implicit 200", func(t *testing.T) {
-		h := audited(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+		h := audited(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
 		if e := onlyEntry(t, h, &buf, httptest.NewRequest("GET", "/x", nil)); e["status"] != float64(200) || e["level"] != "INFO" {
 			t.Errorf("entry = %v", e)
 		}
@@ -157,9 +157,9 @@ func TestAudit_statusAndErrorCapture(t *testing.T) {
 	t.Run("server error body is truncated", func(t *testing.T) {
 		h := audited(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(strings.Repeat("a", 200)))
-			w.Write([]byte(strings.Repeat("b", 200)))
-			w.Write([]byte("c"))
+			_, _ = w.Write([]byte(strings.Repeat("a", 200)))
+			_, _ = w.Write([]byte(strings.Repeat("b", 200)))
+			_, _ = w.Write([]byte("c"))
 		})
 		e := onlyEntry(t, h, &buf, httptest.NewRequest("GET", "/x", nil))
 		if e["level"] != "ERROR" || e["error"] != strings.Repeat("a", 200)+strings.Repeat("b", 56) {

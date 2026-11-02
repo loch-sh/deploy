@@ -154,7 +154,7 @@ func TestDirectories_rejections(t *testing.T) {
 
 	t.Run("owned by another project", func(t *testing.T) {
 		e := newTestEnv(t)
-		e.reg.Claim("group-app", "staging", "99")
+		must(t, e.reg.Claim("group-app", "staging", "99"))
 		body := `{"entries":[{"service":"api","name":"x"}]}`
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusForbidden)
 		if _, err := os.Stat(e.websiteDir("api", "x")); !os.IsNotExist(err) {
@@ -167,8 +167,8 @@ func TestDirectories_filesystemFailures(t *testing.T) {
 	t.Run("websites base is a file", func(t *testing.T) {
 		e := newTestEnv(t)
 		e.claimTestStack(t)
-		os.MkdirAll(filepath.Dir(e.websitesBase), 0o700)
-		os.WriteFile(e.websitesBase, nil, 0o600)
+		must(t, os.MkdirAll(filepath.Dir(e.websitesBase), 0o700))
+		must(t, os.WriteFile(e.websitesBase, nil, 0o600))
 
 		body := `{"entries":[{"service":"api","name":"x"}]}`
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusInternalServerError)
@@ -219,15 +219,15 @@ func TestDirectories_symlinkEscapes(t *testing.T) {
 
 	t.Run("service dir is an absolute symlink", func(t *testing.T) {
 		e, victim := setup(t)
-		os.Symlink(victim, filepath.Join(e.websitesBase, testKey, "api"))
+		must(t, os.Symlink(victim, filepath.Join(e.websitesBase, testKey, "api")))
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusConflict)
 		assertUntouched(t, victim)
 	})
 
 	t.Run("target dir is an absolute symlink", func(t *testing.T) {
 		e, victim := setup(t)
-		os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755)
-		os.Symlink(victim, e.websiteDir("api", "storage"))
+		must(t, os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755))
+		must(t, os.Symlink(victim, e.websiteDir("api", "storage")))
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusConflict)
 		assertUntouched(t, victim)
 	})
@@ -235,9 +235,9 @@ func TestDirectories_symlinkEscapes(t *testing.T) {
 	t.Run("target dir is a relative symlink to another stack", func(t *testing.T) {
 		e, _ := setup(t)
 		other := filepath.Join(e.websitesBase, "other-stack", "data")
-		os.MkdirAll(other, 0o700)
-		os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755)
-		os.Symlink("../../other-stack/data", e.websiteDir("api", "storage"))
+		must(t, os.MkdirAll(other, 0o700))
+		must(t, os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755))
+		must(t, os.Symlink("../../other-stack/data", e.websiteDir("api", "storage")))
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusConflict)
 		assertUntouched(t, other)
 	})
@@ -245,17 +245,17 @@ func TestDirectories_symlinkEscapes(t *testing.T) {
 	t.Run("stack dir is a symlink to another stack", func(t *testing.T) {
 		e, _ := setup(t)
 		other := filepath.Join(e.websitesBase, "other-stack")
-		os.MkdirAll(other, 0o700)
-		os.Remove(filepath.Join(e.websitesBase, testKey))
-		os.Symlink("other-stack", filepath.Join(e.websitesBase, testKey))
+		must(t, os.MkdirAll(other, 0o700))
+		must(t, os.Remove(filepath.Join(e.websitesBase, testKey)))
+		must(t, os.Symlink("other-stack", filepath.Join(e.websitesBase, testKey)))
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusConflict)
 		assertUntouched(t, other)
 	})
 
 	t.Run("target is a regular file", func(t *testing.T) {
 		e, _ := setup(t)
-		os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755)
-		os.WriteFile(e.websiteDir("api", "storage"), nil, 0o600)
+		must(t, os.MkdirAll(filepath.Join(e.websitesBase, testKey, "api"), 0o755))
+		must(t, os.WriteFile(e.websiteDir("api", "storage"), nil, 0o600))
 		assertStatus(t, serve(e.dirsHandler(), newDirsRequest(body), defaultClaims()), http.StatusConflict)
 	})
 }

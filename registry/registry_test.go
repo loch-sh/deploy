@@ -27,7 +27,7 @@ func TestClaim_ownerMismatch(t *testing.T) {
 	r := newTestRegistry(t)
 	_ = r.Claim("myapp", "staging", "id-abc")
 
-	if err := r.Claim("myapp", "staging", "id-xyz"); err != ErrOwnerMismatch {
+	if err := r.Claim("myapp", "staging", "id-xyz"); !errors.Is(err, ErrOwnerMismatch) {
 		t.Fatalf("expected ErrOwnerMismatch, got %v", err)
 	}
 }
@@ -50,7 +50,7 @@ func TestRelease_mismatch(t *testing.T) {
 	r := newTestRegistry(t)
 	_ = r.Claim("myapp", "staging", "id-abc")
 
-	if err := r.Release("myapp", "staging", "id-wrong"); err != ErrOwnerMismatch {
+	if err := r.Release("myapp", "staging", "id-wrong"); !errors.Is(err, ErrOwnerMismatch) {
 		t.Fatalf("expected ErrOwnerMismatch, got %v", err)
 	}
 }
@@ -62,7 +62,7 @@ func TestVerify(t *testing.T) {
 	if err := r.Verify("myapp", "staging", "id-abc"); err != nil {
 		t.Errorf("verify with correct id: %v", err)
 	}
-	if err := r.Verify("myapp", "staging", "id-xyz"); err != ErrOwnerMismatch {
+	if err := r.Verify("myapp", "staging", "id-xyz"); !errors.Is(err, ErrOwnerMismatch) {
 		t.Errorf("verify with wrong id: expected ErrOwnerMismatch, got %v", err)
 	}
 	// Unknown namespace/environment — not claimed: nobody may act on it.
@@ -87,7 +87,7 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if err := r2.Claim("myapp", "staging", "id-xyz"); err != ErrOwnerMismatch {
+	if err := r2.Claim("myapp", "staging", "id-xyz"); !errors.Is(err, ErrOwnerMismatch) {
 		t.Fatalf("expected ErrOwnerMismatch after reload, got %v", err)
 	}
 }

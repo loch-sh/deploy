@@ -78,17 +78,17 @@ func checkExistingMounts(ctx context.Context, st stack, websitesDir string) (int
 		"namespace", st.Namespace, "environment", st.Environment, "legacy_mounts", found)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "existing containers of this stack, started by an older deployment, have bind mounts the deployment policy no longer allows"+
-		" (sources must be exactly WEBSITES_BASE/%s/<service>/<name>); while they exist they could tamper with this deploy's bind sources: ", st.Key)
+	b.WriteString(fmt.Sprintf("existing containers of this stack, started by an older deployment, have bind mounts the deployment policy no longer allows"+
+		" (sources must be exactly WEBSITES_BASE/%s/<service>/<name>); while they exist they could tamper with this deploy's bind sources: ", st.Key))
 	for i, lm := range found {
 		if i == maxReportedLegacyMounts {
-			fmt.Fprintf(&b, "; … and %d more", len(found)-i)
+			b.WriteString(fmt.Sprintf("; … and %d more", len(found)-i))
 			break
 		}
 		if i > 0 {
 			b.WriteString("; ")
 		}
-		fmt.Fprintf(&b, "container %q, target %q: %s", lm.Container, lm.Target, lm.reason)
+		b.WriteString(fmt.Sprintf("container %q, target %q: %s", lm.Container, lm.Target, lm.reason))
 	}
 	b.WriteString(". Remove them with DELETE /stack (move their data to the <service>/<name> layout), then deploy again")
 	return http.StatusConflict, b.String()

@@ -86,7 +86,7 @@ type flexBool bool
 
 func (b *flexBool) UnmarshalJSON(data []byte) error {
 	s := strings.Trim(string(data), `"`)
-	*b = flexBool(s == "true")
+	*b = s == "true"
 	return nil
 }
 

@@ -11,7 +11,7 @@
 FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00 AS dockercli
 
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM golang:1.26.9-alpine3.23@sha256:6750308561953d451210ed1a8086d36c8c8bdcbf672d38d9d0d424b8a7a0216c AS builder
+FROM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS builder
 
 WORKDIR /src
 
@@ -20,7 +20,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /deploy-server .
+# VERSION is the release tag (set by the release workflow); TARGETARCH is
+# provided by buildx for multi-platform builds (amd64, arm64).
+ARG VERSION=dev
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /deploy-server .
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # Alpine is used (rather than scratch/distroless) because the server spawns
@@ -48,6 +53,12 @@ RUN mkdir -p /data/compose /data/websites /app/data /root/.docker
 WORKDIR /app
 
 COPY --from=builder /deploy-server /usr/local/bin/deploy-server
+
+# OCI labels (the release workflow adds org.opencontainers.image.version,
+# revision, created and source from the git tag via docker/metadata-action).
+LABEL org.opencontainers.image.title="deploy-server" \
+      org.opencontainers.image.description="GitLab OIDC authenticated docker compose deployment server" \
+      org.opencontainers.image.licenses="UNLICENSED"
 
 # Documentation only: the port must NOT be published on the host; Traefik
 # reaches it over a dedicated internal network.

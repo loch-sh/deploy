@@ -1,21 +1,21 @@
 package config
 
 import (
-	"os"
 	"testing"
 )
 
-// setRequired sets the env vars Load() requires and returns a cleanup func.
+// setRequired sets the env vars Load() requires; t.Setenv restores them when
+// the test ends.
 func setRequired(t *testing.T) {
 	t.Helper()
-	os.Setenv("GITLAB_ISSUER", "https://gitlab.example.com")
-	os.Setenv("GITLAB_AUDIENCE", "https://deploy.example.com")
+	t.Setenv("GITLAB_ISSUER", "https://gitlab.example.com")
+	t.Setenv("GITLAB_AUDIENCE", "https://deploy.example.com")
 }
 
 func TestLoad_defaults(t *testing.T) {
-	// Unset all optional env vars that Load reads.
+	// Clear all optional env vars that Load reads (Load treats empty as unset).
 	for _, k := range []string{"LISTEN_ADDR", "COMPOSE_BASE", "WEBSITES_BASE", "MAX_UPLOAD_MB", "DATA_DIR", "PROTECTED_ENVS"} {
-		os.Unsetenv(k)
+		t.Setenv(k, "")
 	}
 	setRequired(t)
 
@@ -42,16 +42,11 @@ func TestLoad_defaults(t *testing.T) {
 }
 
 func TestLoad_envOverrides(t *testing.T) {
-	os.Setenv("LISTEN_ADDR", ":9090")
-	os.Setenv("COMPOSE_BASE", "/srv/compose")
-	os.Setenv("MAX_UPLOAD_MB", "50")
-	os.Setenv("PROTECTED_ENVS", "production, recette")
+	t.Setenv("LISTEN_ADDR", ":9090")
+	t.Setenv("COMPOSE_BASE", "/srv/compose")
+	t.Setenv("MAX_UPLOAD_MB", "50")
+	t.Setenv("PROTECTED_ENVS", "production, recette")
 	setRequired(t)
-	defer func() {
-		for _, k := range []string{"LISTEN_ADDR", "COMPOSE_BASE", "MAX_UPLOAD_MB", "PROTECTED_ENVS", "GITLAB_ISSUER", "GITLAB_AUDIENCE"} {
-			os.Unsetenv(k)
-		}
-	}()
 
 	cfg, err := Load()
 	if err != nil {
@@ -72,8 +67,8 @@ func TestLoad_envOverrides(t *testing.T) {
 }
 
 func TestLoad_missingRequired(t *testing.T) {
-	os.Unsetenv("GITLAB_ISSUER")
-	os.Unsetenv("GITLAB_AUDIENCE")
+	t.Setenv("GITLAB_ISSUER", "")
+	t.Setenv("GITLAB_AUDIENCE", "")
 	if _, err := Load(); err == nil {
 		t.Error("expected error when GITLAB_ISSUER/GITLAB_AUDIENCE are unset")
 	}
@@ -106,12 +101,7 @@ func TestParseCIDRList(t *testing.T) {
 
 func TestLoad_invalidMaxUpload(t *testing.T) {
 	setRequired(t)
-	os.Setenv("MAX_UPLOAD_MB", "notanumber")
-	defer func() {
-		os.Unsetenv("MAX_UPLOAD_MB")
-		os.Unsetenv("GITLAB_ISSUER")
-		os.Unsetenv("GITLAB_AUDIENCE")
-	}()
+	t.Setenv("MAX_UPLOAD_MB", "notanumber")
 
 	if _, err := Load(); err == nil {
 		t.Error("expected error for invalid MAX_UPLOAD_MB")
@@ -120,6 +110,7 @@ func TestLoad_invalidMaxUpload(t *testing.T) {
 
 func TestLoad_issuerMustBeHTTPS(t *testing.T) {
 	t.Setenv("GITLAB_AUDIENCE", "https://deploy.example.com")
+	//goland:noinspection HttpUrlsUsage
 	for _, issuer := range []string{"http://gitlab.example.com", "gitlab.example.com", "https://", "://bad"} {
 		t.Setenv("GITLAB_ISSUER", issuer)
 		if _, err := Load(); err == nil {
@@ -228,6 +219,7 @@ func TestLoad_forbiddenTraefikHosts(t *testing.T) {
 		}
 	}
 
+	//goland:noinspection HttpUrlsUsage
 	for _, bad := range []string{"*.example.com", "exa mple.com", "-bad.com", "a..b", "http://x.com", ":443"} {
 		t.Setenv("FORBIDDEN_TRAEFIK_HOSTS", bad)
 		if _, err := Load(); err == nil {

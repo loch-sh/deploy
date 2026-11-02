@@ -86,7 +86,7 @@ func TestExec_rejections(t *testing.T) {
 
 	t.Run("owned by another project", func(t *testing.T) {
 		e := newTestEnv(t)
-		e.reg.Claim("group-app", "staging", "99")
+		must(t, e.reg.Claim("group-app", "staging", "99"))
 		r := jsonRequest("POST", "/exec", `{"service":"api","command":["ls"]}`)
 		assertStatus(t, serve(e.execHandler(), r, defaultClaims()), http.StatusForbidden)
 	})

@@ -182,8 +182,8 @@ func TestCheckBindSourcePath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(websites, "web", "storage"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(websites, "web", "file"), nil, 0o600)
-	os.Symlink("/", filepath.Join(websites, "evil"))
+	must(t, os.WriteFile(filepath.Join(websites, "web", "file"), nil, 0o600))
+	must(t, os.Symlink("/", filepath.Join(websites, "evil")))
 
 	tests := []struct {
 		name, src string
@@ -222,5 +222,13 @@ func TestCheckBindSourcePath(t *testing.T) {
 
 	if err := CheckBindSourcePath("/x/y", ""); !errors.Is(err, ErrBindOutside) {
 		t.Errorf("no websites dir: err = %v", err)
+	}
+}
+
+// must fails the test immediately when err is not nil.
+func must(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

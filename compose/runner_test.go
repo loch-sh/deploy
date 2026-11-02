@@ -66,7 +66,7 @@ func TestRunFailureKeepsOutput(t *testing.T) {
 	if strings.Contains(err.Error(), "fake failure") {
 		t.Errorf("error must not embed stderr: %v", err)
 	}
-	if !strings.Contains(out.Stderr, "fake failure on pull") {
+	if !strings.Contains(StderrOf(out), "fake failure on pull") {
 		t.Errorf("stderr not captured: %+v", out)
 	}
 }
@@ -192,7 +192,7 @@ func TestCappedBuffer(t *testing.T) {
 	}
 
 	exact := &cappedBuffer{max: 3}
-	exact.Write([]byte("abc"))
+	_, _ = exact.Write([]byte("abc"))
 	if got := exact.String(); got != "abc" {
 		t.Errorf("String() = %q, want no marker at exactly max", got)
 	}

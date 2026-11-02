@@ -107,12 +107,14 @@ func multipartRequest(t *testing.T, path string, files []upload, fields map[stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		io.WriteString(part, f.content)
+		if _, err := io.WriteString(part, f.content); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for k, v := range fields {
-		mw.WriteField(k, v)
+		must(t, mw.WriteField(k, v))
 	}
-	mw.Close()
+	must(t, mw.Close())
 
 	r := httptest.NewRequest("POST", path, &body)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
@@ -146,5 +148,13 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("status = %d, want %d (body: %q)", rec.Code, want, rec.Body.String())
+	}
+}
+
+// must fails the test immediately when err is not nil.
+func must(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

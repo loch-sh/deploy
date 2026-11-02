@@ -43,6 +43,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"deploy-server/internal/atomicfile"
 )
 
 // ErrOwnerMismatch is returned when a project_id does not match the registered owner.
@@ -185,16 +187,20 @@ func (r *Registry) ClaimOwner(o Owner) error {
 	}
 
 	next := existing
+	changed := false
 	if !ok {
 		next = Entry{ProjectID: o.ProjectID, ClaimedAt: time.Now().UTC()}
+		changed = true
 	}
-	if o.ProjectPath != "" {
+	if o.ProjectPath != "" && next.ProjectPath != o.ProjectPath {
 		next.ProjectPath = o.ProjectPath
+		changed = true
 	}
-	if o.EnvironmentName != "" {
+	if o.EnvironmentName != "" && next.Environment != o.EnvironmentName {
 		next.Environment = o.EnvironmentName
+		changed = true
 	}
-	if ok && next == existing {
+	if !changed {
 		return nil // nothing changed — no need to touch the disk
 	}
 
@@ -312,13 +318,16 @@ func (r *Registry) Import(entries map[string]Entry) ([]string, error) {
 			conflicts = append(conflicts, fmt.Sprintf("%s (owned by %s, import says %s)", key, cur.ProjectID, in.ProjectID))
 		default:
 			upd := cur
-			if upd.ProjectPath == "" {
+			filled := false
+			if upd.ProjectPath == "" && in.ProjectPath != "" {
 				upd.ProjectPath = in.ProjectPath
+				filled = true
 			}
-			if upd.Environment == "" {
+			if upd.Environment == "" && in.Environment != "" {
 				upd.Environment = in.Environment
+				filled = true
 			}
-			if upd != cur {
+			if filled {
 				next[key] = upd
 				changed = append(changed, key)
 			}
@@ -397,59 +406,8 @@ func (r *Registry) flush() error {
 	if err != nil {
 		return fmt.Errorf("registry: marshal: %w", err)
 	}
-	if err := writeFileAtomic(r.path, raw); err != nil {
+	if err := atomicfile.WriteFile(r.path, raw, 0o600); err != nil {
 		return fmt.Errorf("registry: %w", err)
-	}
-	return nil
-}
-
-// writeFileAtomic replaces path with data durably: it writes a temp file in
-// the same directory, fsyncs it, renames it over path and fsyncs the
-// directory so the rename itself survives a crash.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	committed := false
-	defer func() {
-		if !committed {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", tmpName, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("fsync %s: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename to %s: %w", path, err)
-	}
-	committed = true
-
-	// The new content is now visible; a failing directory fsync only weakens
-	// crash durability, so it is logged rather than reported (reporting it
-	// would make callers roll back state that is already on disk).
-	if d, err := os.Open(dir); err != nil {
-		slog.Warn("registry: open state dir for fsync", "dir", dir, "error", err)
-	} else {
-		if err := d.Sync(); err != nil {
-			slog.Warn("registry: fsync state dir", "dir", dir, "error", err)
-		}
-		d.Close()
 	}
 	return nil
 }

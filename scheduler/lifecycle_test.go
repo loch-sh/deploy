@@ -80,7 +80,7 @@ func TestLoad_stateFileErrors(t *testing.T) {
 
 	t.Run("corrupt JSON", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "autostop.json"), []byte("{"), 0o600)
+		must(t, os.WriteFile(filepath.Join(dir, "autostop.json"), []byte("{"), 0o600))
 		if _, err := Load(dir, noop); err == nil {
 			t.Error("expected error for corrupt state file")
 		}
@@ -88,7 +88,7 @@ func TestLoad_stateFileErrors(t *testing.T) {
 
 	t.Run("unreadable path", func(t *testing.T) {
 		dir := t.TempDir()
-		os.Mkdir(filepath.Join(dir, "autostop.json"), 0o700)
+		must(t, os.Mkdir(filepath.Join(dir, "autostop.json"), 0o700))
 		if _, err := Load(dir, noop); err == nil {
 			t.Error("expected error when the state file is a directory")
 		}
@@ -96,8 +96,8 @@ func TestLoad_stateFileErrors(t *testing.T) {
 
 	t.Run("malformed timestamp is skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "autostop.json"),
-			[]byte(`{"a/b":"not-a-time","c/d":"2030-01-01T00:00:00Z"}`), 0o600)
+		must(t, os.WriteFile(filepath.Join(dir, "autostop.json"),
+			[]byte(`{"a/b":"not-a-time","c/d":"2030-01-01T00:00:00Z"}`), 0o600))
 		s, err := Load(dir, noop)
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -115,9 +115,17 @@ func TestSchedule_flushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Make the state directory impossible to create.
-	os.WriteFile(filepath.Join(dir, "state"), nil, 0o600)
+	must(t, os.WriteFile(filepath.Join(dir, "state"), nil, 0o600))
 
 	if err := s.Schedule("myapp", "staging", time.Hour); err == nil {
 		t.Error("expected flush error")
+	}
+}
+
+// must fails the test immediately when err is not nil.
+func must(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -64,7 +64,7 @@ func TestStop_notClaimedIsForbidden(t *testing.T) {
 	if err := os.MkdirAll(e.stackDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), nil, 0o600)
+	must(t, os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), nil, 0o600))
 
 	rec := serve(e.stopHandler(), stopRequest(), defaultClaims())
 	assertStatus(t, rec, http.StatusForbidden)

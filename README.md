@@ -21,6 +21,7 @@ The trust model, the controls and the residual risks are described in [SECURITY.
 - [Migration runbook](#migration-runbook)
 - [Running the server](#running-the-server)
 - [GitLab CI integration](#gitlab-ci-integration)
+- [Releases and CI](#releases-and-ci)
 - [Running tests](#running-tests)
 - [Directory layout](#directory-layout)
 
@@ -51,7 +52,7 @@ Request processing, from outer to inner layer (`main.go`, `newMux`):
 
 ## Requirements
 
-- Go 1.26+ (to build)
+- Go 1.27.3+ (to build; the `go` directive in `go.mod` is the minimum, `GOTOOLCHAIN=auto` fetches it)
 - Docker with the Compose plugin (`docker compose`). The server relies on `docker compose config --format json --no-env-resolution`, so the plugin must be recent enough to support these flags. It also runs a few plain `docker` commands on the stack's containers (`ps`, `inspect`, `stop`, `rm`, see [Pre-deploy check of existing containers](#pre-deploy-check-of-existing-containers)). The [Dockerfile](Dockerfile) ships the docker CLI 29.9.0 with Docker Compose v5.6.0.
 - A reverse proxy (Traefik recommended) to terminate TLS. The server listens in plain HTTP: `:8080` must **never be exposed directly**.
 - A GitLab instance (15.7+) that issues OIDC ID tokens. See [SECURITY.md](SECURITY.md#deployment-assumptions) for the assumptions made about that instance.
@@ -592,6 +593,8 @@ docker buildx imagetools inspect <image>:<tag> --format '{{json .Manifest.Digest
 
 The image declares a `HEALTHCHECK` on `GET /health` (every 30 s, with the port derived from `LISTEN_ADDR`, which must then bind all interfaces or loopback). The process runs as root; see [SECURITY.md](SECURITY.md#the-server-runs-as-root-with-the-docker-socket).
 
+The build accepts two arguments: `VERSION` (embedded in the binary, shown by `deploy-server -version` and in the `deploy-server starting` log entry; `dev` by default) and `TARGETARCH` (set automatically by `docker buildx` for `linux/amd64` and `linux/arm64`). Released images are published on GHCR, see [Releases and CI](#releases-and-ci).
+
 ### Reference topology
 
 [docker-compose.example.yml](docker-compose.example.yml) deploys deploy-server, Traefik and a Docker socket proxy (requires Docker Compose 2.23.1 or later, for the inline `configs.content`).
@@ -736,6 +739,39 @@ Checklist:
 
 ---
 
+## Releases and CI
+
+Two GitHub Actions workflows live in [`.github/workflows`](.github/workflows):
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push to `main`, pull requests | `gofmt`, `go vet`, `go test -race`, `govulncheck`, then a `linux/amd64` image build that is not pushed |
+| `release.yml` | push of a tag `v<major>.<minor>.<patch>[-suffix]` | runs the tests, then builds and publishes the release artefacts below |
+
+Pushing a tag such as `v1.0.0` produces:
+
+- **Container image** on GHCR, multi-arch (`linux/amd64`, `linux/arm64`), tagged `ghcr.io/<owner>/<repo>:v1.0.0`, `:1.0`, `:1` and `:latest`. A prerelease tag (`v1.1.0-rc1`) is published under its own tag only, without moving `latest`, `1.1` or `1`. The image carries OCI labels and annotations (version, revision, source), an SBOM and a SLSA provenance attestation pushed to the registry.
+- **Standalone binaries** attached to a GitHub Release: `deploy-server_v1.0.0_linux_amd64.tar.gz` and `deploy-server_v1.0.0_linux_arm64.tar.gz`, each containing the static binary, `README.md`, `SECURITY.md`, `docker-compose.example.yml` and `examples/`, with a `.sha256` file and a provenance attestation. Release notes are generated from the merged pull requests.
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+Verify a download with the SHA256 file, or its provenance with the GitHub CLI:
+
+```bash
+sha256sum -c deploy-server_v1.0.0_linux_amd64.tar.gz.sha256
+gh attestation verify deploy-server_v1.0.0_linux_amd64.tar.gz --repo <owner>/<repo>
+gh attestation verify oci://ghcr.io/<owner>/<repo>:v1.0.0 --repo <owner>/<repo>
+```
+
+The workflows pin every action to a commit SHA (with the version in a comment) and the Dockerfile pins base images by digest; [`.github/dependabot.yml`](.github/dependabot.yml) opens weekly pull requests to bump actions, Go modules and base images. The repository needs no secret: GHCR authentication uses the workflow's `GITHUB_TOKEN` (`packages: write`), and the Release upload uses `contents: write`. For a private repository, grant the package the required visibility or pull with a token that has `read:packages`.
+
+The standalone binary still needs the `docker` CLI with the Compose plugin on its `PATH`, and the same directory layout as the image (see [Volume paths must match on host and container](#volume-paths-must-match-on-host-and-container)); the container image is the supported way to run it.
+
+---
+
 ## Running tests
 
 ```bash
@@ -778,6 +814,10 @@ deploy-server/
 │   └── testutil/              # Test doubles: fake docker binary, fake GitLab OIDC issuer
 ├── examples/
 │   └── gitlab-ci.example.yml  # Pipeline migrated from the SSH workflow
+├── .github/
+│   ├── workflows/ci.yml       # Tests, vet, govulncheck, image build on push/PR
+│   ├── workflows/release.yml  # On tag v*: GHCR multi-arch image + release binaries
+│   └── dependabot.yml         # Weekly bumps of actions, Go modules and base images
 ├── Dockerfile                 # Multi-stage build, Alpine runtime with the docker CLI
 ├── docker-compose.example.yml # Example deployment behind Traefik
 ├── SECURITY.md                # Threat model, controls, residual risks

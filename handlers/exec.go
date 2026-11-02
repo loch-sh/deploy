@@ -91,11 +91,15 @@ func Exec(cfg ExecConfig) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			json.NewEncoder(w).Encode(execResponse{Stdout: out.Stdout, Stderr: out.Stderr})
+			if err := json.NewEncoder(w).Encode(execResponse{Stdout: out.Stdout, Stderr: out.Stderr}); err != nil {
+				slog.Warn("exec: write response", "error", err)
+			}
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(execResponse{Stdout: out.Stdout, Stderr: out.Stderr})
+		if err := json.NewEncoder(w).Encode(execResponse{Stdout: out.Stdout, Stderr: out.Stderr}); err != nil {
+			slog.Warn("exec: write response", "error", err)
+		}
 	}
 }

@@ -47,7 +47,7 @@ func TestClaimOwner_collision(t *testing.T) {
 		t.Errorf("release: expected ErrKeyCollision, got %v", err)
 	}
 	// Different project_id without a known tuple is a plain mismatch.
-	if err := r.Claim("acme-shop-api", "staging", "2"); err != ErrOwnerMismatch {
+	if err := r.Claim("acme-shop-api", "staging", "2"); !errors.Is(err, ErrOwnerMismatch) {
 		t.Errorf("expected ErrOwnerMismatch, got %v", err)
 	}
 }
@@ -92,8 +92,8 @@ func TestClaimAndRelease_rollbackOnFlushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Replace the state directory with a file: every later write fails.
-	os.RemoveAll(filepath.Join(dir, "state"))
-	os.WriteFile(filepath.Join(dir, "state"), nil, 0o600)
+	must(t, os.RemoveAll(filepath.Join(dir, "state")))
+	must(t, os.WriteFile(filepath.Join(dir, "state"), nil, 0o600))
 
 	err = r.Claim("app", "staging", "1")
 	if err == nil || errors.Is(err, ErrOwnerMismatch) {
@@ -145,7 +145,7 @@ func TestLoad_formats(t *testing.T) {
   },
   "legacy-app-production": "17"
 }`
-	os.WriteFile(filepath.Join(dir, "registry.json"), []byte(doc), 0o600)
+	must(t, os.WriteFile(filepath.Join(dir, "registry.json"), []byte(doc), 0o600))
 	r, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestImportFile(t *testing.T) {
 	r := newTestRegistry(t)
 
 	path := filepath.Join(dir, "import.json")
-	os.WriteFile(path, []byte(`{"legacy-app-production": "17"}`), 0o600)
+	must(t, os.WriteFile(path, []byte(`{"legacy-app-production": "17"}`), 0o600))
 	if changed, err := r.ImportFile(path); err != nil || len(changed) != 1 {
 		t.Fatalf("ImportFile = %v, %v", changed, err)
 	}
@@ -248,7 +248,7 @@ func TestImportFile(t *testing.T) {
 	if _, err := r.ImportFile(filepath.Join(dir, "missing.json")); err == nil {
 		t.Error("expected error for a missing file")
 	}
-	os.WriteFile(path, []byte(`{`), 0o600)
+	must(t, os.WriteFile(path, []byte(`{`), 0o600))
 	if _, err := r.ImportFile(path); err == nil {
 		t.Error("expected error for corrupt file")
 	}

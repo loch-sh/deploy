@@ -66,7 +66,7 @@ func TestIssuerToken(t *testing.T) {
 	iss := NewIssuer(t)
 	token := iss.Token(t, "aud", map[string]any{"project_id": "7"})
 
-	jws, err := jose.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+	jws, err := jose.ParseSignedCompact(token, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
 		t.Fatalf("parse token: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestIssuerEndpoints(t *testing.T) {
 		}
 		var body map[string]any
 		err = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil || resp.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("GET %s: content-type %q, decode err %v", path, resp.Header.Get("Content-Type"), err)
 		}

@@ -251,8 +251,8 @@ func TestDeploy_policyRejections(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newDeployEnv(t)
 			// A previous deploy left files the rejected one must not touch.
-			os.MkdirAll(e.stackDir(), 0o700)
-			os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), []byte("previous"), 0o600)
+			must(t, os.MkdirAll(e.stackDir(), 0o700))
+			must(t, os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), []byte("previous"), 0o600))
 
 			r := multipartRequest(t, "/deploy", tc.files, nil)
 			rec := serve(e.deploy(), r, defaultClaims())
@@ -285,9 +285,9 @@ func TestDeploy_policyRejections(t *testing.T) {
 
 func TestDeploy_allowedExternalNetwork(t *testing.T) {
 	e := newDeployEnv(t)
-	compose := `{"services":{"web":{"networks":{"traefik":null}}},"networks":{"traefik":{"name":"traefik","external":true}}}`
+	composeJSON := `{"services":{"web":{"networks":{"traefik":null}}},"networks":{"traefik":{"name":"traefik","external":true}}}`
 
-	r := multipartRequest(t, "/deploy", []upload{composeWith(compose)}, nil)
+	r := multipartRequest(t, "/deploy", []upload{composeWith(composeJSON)}, nil)
 	assertStatus(t, serve(e.deploy(), r, defaultClaims()), http.StatusNoContent)
 }
 
@@ -434,7 +434,7 @@ func TestDeploy_composeFailures(t *testing.T) {
 
 	t.Run("failed redeploy keeps ownership", func(t *testing.T) {
 		e := newDeployEnv(t)
-		e.reg.Claim("group-app", "staging", "1")
+		must(t, e.reg.Claim("group-app", "staging", "1"))
 		e.docker.FailOn(t, "up")
 
 		r := multipartRequest(t, "/deploy", []upload{composeUpload}, nil)
@@ -450,10 +450,10 @@ func TestDeploy_claimWriteFailure(t *testing.T) {
 	if err := os.MkdirAll(e.dataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.Chmod(e.dataDir, 0o500)
-	t.Cleanup(func() { os.Chmod(e.dataDir, 0o700) })
+	must(t, os.Chmod(e.dataDir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(e.dataDir, 0o700) })
 	if f, err := os.Create(filepath.Join(e.dataDir, "probe")); err == nil {
-		f.Close()
+		_ = f.Close()
 		t.Skip("data directory is still writable (running as root?)")
 	}
 
@@ -468,8 +468,8 @@ func TestDeploy_claimWriteFailure(t *testing.T) {
 func TestDeploy_filesystemFailures(t *testing.T) {
 	t.Run("compose base is a file", func(t *testing.T) {
 		e := newDeployEnv(t)
-		os.MkdirAll(filepath.Dir(e.composeBase), 0o700)
-		os.WriteFile(e.composeBase, nil, 0o600)
+		must(t, os.MkdirAll(filepath.Dir(e.composeBase), 0o700))
+		must(t, os.WriteFile(e.composeBase, nil, 0o600))
 
 		r := multipartRequest(t, "/deploy", []upload{composeUpload}, nil)
 		assertStatus(t, serve(e.deploy(), r, defaultClaims()), http.StatusInternalServerError)
@@ -477,10 +477,10 @@ func TestDeploy_filesystemFailures(t *testing.T) {
 
 	t.Run("compose base not writable", func(t *testing.T) {
 		e := newDeployEnv(t)
-		os.MkdirAll(e.composeBase, 0o500)
-		t.Cleanup(func() { os.Chmod(e.composeBase, 0o700) })
+		must(t, os.MkdirAll(e.composeBase, 0o500))
+		t.Cleanup(func() { _ = os.Chmod(e.composeBase, 0o700) })
 		if f, err := os.Create(filepath.Join(e.composeBase, "probe")); err == nil {
-			f.Close()
+			_ = f.Close()
 			t.Skip("compose base is still writable (running as root?)")
 		}
 
@@ -490,8 +490,8 @@ func TestDeploy_filesystemFailures(t *testing.T) {
 
 	t.Run("stack dir is a file", func(t *testing.T) {
 		e := newDeployEnv(t)
-		os.MkdirAll(e.composeBase, 0o700)
-		os.WriteFile(e.stackDir(), nil, 0o600)
+		must(t, os.MkdirAll(e.composeBase, 0o700))
+		must(t, os.WriteFile(e.stackDir(), nil, 0o600))
 
 		r := multipartRequest(t, "/deploy", []upload{composeUpload}, nil)
 		assertStatus(t, serve(e.deploy(), r, defaultClaims()), http.StatusInternalServerError)
@@ -499,7 +499,7 @@ func TestDeploy_filesystemFailures(t *testing.T) {
 
 	t.Run("env file name taken by a directory", func(t *testing.T) {
 		e := newDeployEnv(t)
-		os.MkdirAll(filepath.Join(e.stackDir(), "api.env", "sub"), 0o700)
+		must(t, os.MkdirAll(filepath.Join(e.stackDir(), "api.env", "sub"), 0o700))
 
 		r := multipartRequest(t, "/deploy", []upload{composeUpload, {"env_files", "api.env", "A=1"}}, nil)
 		assertStatus(t, serve(e.deploy(), r, defaultClaims()), http.StatusInternalServerError)
@@ -550,8 +550,8 @@ func TestPruneStackDir_missingDir(t *testing.T) {
 
 func TestStopFunc(t *testing.T) {
 	e := newTestEnv(t)
-	os.MkdirAll(e.stackDir(), 0o700)
-	os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), nil, 0o600)
+	must(t, os.MkdirAll(e.stackDir(), 0o700))
+	must(t, os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), nil, 0o600))
 
 	t.Run("waits for the stack lock", func(t *testing.T) {
 		unlock, _ := stackLocks.lock(context.Background(), testKey)
@@ -623,7 +623,7 @@ func TestComposeFailure_timeout(t *testing.T) {
 func TestValidateStaged_contextErrors(t *testing.T) {
 	e := newDeployEnv(t)
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(`{"services":{}}`), 0o600)
+	must(t, os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(`{"services":{}}`), 0o600))
 	st := stack{Key: testKey}
 	policy := compose.Policy{Key: testKey, ProjectDir: dir, WebsitesDir: e.websitesBase}
 

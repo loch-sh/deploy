@@ -39,25 +39,25 @@ func (e *testEnv) withContainer(t *testing.T, mounts ...string) {
 func TestDeploy_existingContainers(t *testing.T) {
 	allowed := []struct {
 		name   string
-		mounts func(e *testEnv) []string
+		mounts func(t *testing.T, e *testEnv) []string
 	}{
-		{"conforming bind", func(e *testEnv) []string {
+		{"conforming bind", func(t *testing.T, e *testEnv) []string {
 			src := filepath.Join(e.websitesBase, testKey, "web", "storage")
-			os.MkdirAll(src, 0o755)
+			must(t, os.MkdirAll(src, 0o755))
 			return []string{bindMount(src, "/s")}
 		}},
-		{"named volume and tmpfs", func(e *testEnv) []string {
+		{"named volume and tmpfs", func(_ *testing.T, _ *testEnv) []string {
 			return []string{
 				`{"Type":"volume","Name":"group-app-staging_db","Source":"/var/lib/docker/volumes/group-app-staging_db/_data","Destination":"/db","Driver":"local","RW":true}`,
 				`{"Type":"tmpfs","Source":"","Destination":"/tmp","RW":true}`,
 			}
 		}},
-		{"no mounts", func(*testEnv) []string { return nil }},
+		{"no mounts", func(*testing.T, *testEnv) []string { return nil }},
 	}
 	for _, tc := range allowed {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newDeployEnv(t)
-			e.withContainer(t, tc.mounts(e)...)
+			e.withContainer(t, tc.mounts(t, e)...)
 			r := multipartRequest(t, "/deploy", []upload{composeUpload}, nil)
 			assertStatus(t, serve(e.deploy(), r, defaultClaims()), http.StatusNoContent)
 			if calls := e.docker.Calls(); len(calls) < 3 || !strings.HasPrefix(calls[2], "inspect ") {
@@ -68,33 +68,35 @@ func TestDeploy_existingContainers(t *testing.T) {
 
 	refused := []struct {
 		name  string
-		src   func(e *testEnv) string
+		src   func(t *testing.T, e *testEnv) string
 		dst   string
 		want  string
 		leaks string // must not appear in the body
 	}{
-		{"bind on the stack directory", func(e *testEnv) string { return filepath.Join(e.websitesBase, testKey) },
+		{"bind on the stack directory", func(_ *testing.T, e *testEnv) string { return filepath.Join(e.websitesBase, testKey) },
 			"/data", `source \"group-app-staging/\" is not at the <service>/<name> depth`, ""},
-		{"bind on a service directory", func(e *testEnv) string { return filepath.Join(e.websitesBase, testKey, "web") },
+		{"bind on a service directory", func(_ *testing.T, e *testEnv) string { return filepath.Join(e.websitesBase, testKey, "web") },
 			"/data", `source \"group-app-staging/web\" is not at the <service>/<name> depth`, ""},
-		{"bind outside WEBSITES_BASE", func(*testEnv) string { return "/var/run/docker.sock" },
+		{"bind outside WEBSITES_BASE", func(*testing.T, *testEnv) string { return "/var/run/docker.sock" },
 			"/var/run/docker.sock", "source outside the stack data directory", ""},
-		{"bind on another stack", func(e *testEnv) string { return filepath.Join(e.websitesBase, "other-prod", "web", "storage") },
+		{"bind on another stack", func(_ *testing.T, e *testEnv) string {
+			return filepath.Join(e.websitesBase, "other-prod", "web", "storage")
+		},
 			"/s", "source outside the stack data directory", "other-prod"},
-		{"symlinked service component", func(e *testEnv) string {
+		{"symlinked service component", func(t *testing.T, e *testEnv) string {
 			d := filepath.Join(e.websitesBase, testKey)
-			os.MkdirAll(d, 0o755)
-			os.Symlink("/", filepath.Join(d, "evil"))
+			must(t, os.MkdirAll(d, 0o755))
+			must(t, os.Symlink("/", filepath.Join(d, "evil")))
 			return filepath.Join(d, "evil", "etc")
 		}, "/etc", `source \"group-app-staging/evil/etc\": bind source component \"evil\" is a symbolic link`, ""},
 	}
 	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newDeployEnv(t)
-			e.withContainer(t, bindMount(tc.src(e), tc.dst))
+			e.withContainer(t, bindMount(tc.src(t, e), tc.dst))
 			// A previous deploy left files the refused one must not touch.
-			os.MkdirAll(e.stackDir(), 0o700)
-			os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), []byte("previous"), 0o600)
+			must(t, os.MkdirAll(e.stackDir(), 0o700))
+			must(t, os.WriteFile(filepath.Join(e.stackDir(), "docker-compose.yml"), []byte("previous"), 0o600))
 
 			rec := serve(e.deploy(), multipartRequest(t, "/deploy", []upload{composeUpload}, nil), defaultClaims())
 			assertStatus(t, rec, http.StatusConflict)

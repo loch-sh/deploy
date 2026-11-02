@@ -171,7 +171,7 @@ func RemoveContainers(ctx context.Context, ids []string) (*Output, error) {
 		append([]string{"stop", "--timeout", "10", "--"}, ids...))
 	out, err := runDocker(ctx, runCtx, RemoveTimeout, "docker rm",
 		append([]string{"rm", "--force", "--"}, ids...))
-	if stopErr != nil {
+	if stopErr != nil && stopOut != nil && out != nil {
 		out.Stderr = stopOut.Stderr + out.Stderr
 	}
 	return out, err

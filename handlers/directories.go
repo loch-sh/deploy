@@ -123,7 +123,7 @@ func Directories(cfg DirsConfig) http.HandlerFunc {
 			httpError(w, fmt.Sprintf("failed to open stack directory: %v", err), statusForFSError(err))
 			return
 		}
-		defer stackRoot.Close()
+		defer func() { _ = stackRoot.Close() }()
 
 		for _, p := range plans {
 			if err := applyDir(stackRoot, p); err != nil {
@@ -178,7 +178,7 @@ func openStackRoot(websitesBase, key string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer base.Close()
+	defer func() { _ = base.Close() }()
 
 	if err := base.Mkdir(key, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, err

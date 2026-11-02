@@ -186,7 +186,11 @@ func Deploy(cfg DeployConfig) http.HandlerFunc {
 			httpError(w, "failed to create stack directory", http.StatusInternalServerError)
 			return
 		}
-		defer os.RemoveAll(staging)
+		defer func() {
+			if err := os.RemoveAll(staging); err != nil {
+				slog.Warn("deploy: remove staging dir", "dir", staging, "error", err)
+			}
+		}()
 
 		if code, msg := stageFiles(r, staging, envFiles); code != 0 {
 			httpError(w, msg, code)
@@ -282,7 +286,7 @@ func stageFiles(r *http.Request, dir string, envFiles []*multipart.FileHeader) (
 			return http.StatusBadRequest, fmt.Sprintf("env_files: cannot read %s", fh.Filename)
 		}
 		writeErr := writeReader(f, filepath.Join(dir, fh.Filename), 0o600)
-		f.Close()
+		_ = f.Close()
 		if writeErr != nil {
 			slog.Error("deploy: stage env file", "file", fh.Filename, "error", writeErr)
 			return http.StatusInternalServerError, fmt.Sprintf("env_files: failed to write %s", fh.Filename)
@@ -318,7 +322,7 @@ func validateStaged(ctx context.Context, st stack, staging string, policy compos
 	out, err := compose.Config(ctx, compose.Stack{Key: st.Key, Dir: staging, ComposeFile: composeFile})
 	if err != nil {
 		slog.Warn("deploy: compose config failed", "namespace", st.Namespace, "environment", st.Environment,
-			"error", err, "stderr", tail(out.Stderr, logExcerptBytes))
+			"error", err, "stderr", tail(compose.StderrOf(out), logExcerptBytes))
 		if code := contextStatus(err); code != 0 {
 			return code, "docker compose config " + http.StatusText(code)
 		}
@@ -326,7 +330,7 @@ func validateStaged(ctx context.Context, st stack, staging string, policy compos
 		if !errors.As(err, &exitErr) {
 			return http.StatusInternalServerError, "failed to render compose file"
 		}
-		return http.StatusBadRequest, "invalid compose file: " + clientExcerpt(out.Stderr, staging)
+		return http.StatusBadRequest, "invalid compose file: " + clientExcerpt(compose.StderrOf(out), staging)
 	}
 	doc, err := compose.ParseModel([]byte(out.Stdout))
 	if err != nil {
@@ -411,7 +415,7 @@ func writeFormFile(r *http.Request, field, dest string, perm os.FileMode) error 
 	if err != nil {
 		return &missingFieldError{field: field, err: err}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return writeReader(f, dest, perm)
 }
 
@@ -435,12 +439,12 @@ func writeReader(src io.Reader, dest string, perm os.FileMode) error {
 		return err
 	}
 	if _, err := io.Copy(out, src); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, dest)
@@ -529,7 +533,7 @@ func removeLeftoverContainers(ctx context.Context, key string) error {
 	}
 	slog.Warn("stop: removing containers left outside docker compose", "stack", key, "containers", names)
 	if out, err := compose.RemoveContainers(ctx, ids); err != nil {
-		slog.Error("stop: docker rm failed", "stack", key, "error", err, "stderr", tail(out.Stderr, logExcerptBytes))
+		slog.Error("stop: docker rm failed", "stack", key, "error", err, "stderr", tail(compose.StderrOf(out), logExcerptBytes))
 		return fmt.Errorf("remove remaining containers: %w", err)
 	}
 	return nil

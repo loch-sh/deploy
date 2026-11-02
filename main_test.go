@@ -69,7 +69,7 @@ func freeAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().String()
 }
 
@@ -80,12 +80,13 @@ func startRun(t *testing.T, cfg *config.Config) (base string, stop func() error)
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, cfg) }()
 
+	//goland:noinspection HttpUrlsUsage
 	base = "http://" + cfg.ListenAddr
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		resp, err := http.Get(base + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			break
 		}
 		select {
@@ -138,7 +139,7 @@ func TestRun_servesAuthenticatedRequestsAndShutsDown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != tc.want {
 			t.Errorf("with token=%v: status = %d, want %d", tc.auth != "", resp.StatusCode, tc.want)
 		}
@@ -152,29 +153,29 @@ func TestRun_servesAuthenticatedRequestsAndShutsDown(t *testing.T) {
 func TestRun_startupFailures(t *testing.T) {
 	iss := testutil.NewIssuer(t)
 
-	tests := map[string]func(cfg *config.Config){
-		"data dir is a file": func(cfg *config.Config) {
-			os.WriteFile(cfg.DataDir, nil, 0o600)
+	tests := map[string]func(t *testing.T, cfg *config.Config){
+		"data dir is a file": func(t *testing.T, cfg *config.Config) {
+			must(t, os.WriteFile(cfg.DataDir, nil, 0o600))
 		},
-		"oidc discovery fails": func(cfg *config.Config) {
+		"oidc discovery fails": func(t *testing.T, cfg *config.Config) {
 			srv := httptest.NewServer(http.NotFoundHandler())
 			t.Cleanup(srv.Close)
 			cfg.GitLabIssuer = srv.URL
 		},
-		"corrupt registry": func(cfg *config.Config) {
-			os.MkdirAll(cfg.DataDir, 0o700)
-			os.WriteFile(filepath.Join(cfg.DataDir, "registry.json"), []byte("{"), 0o600)
+		"corrupt registry": func(t *testing.T, cfg *config.Config) {
+			must(t, os.MkdirAll(cfg.DataDir, 0o700))
+			must(t, os.WriteFile(filepath.Join(cfg.DataDir, "registry.json"), []byte("{"), 0o600))
 		},
-		"corrupt scheduler state": func(cfg *config.Config) {
-			os.MkdirAll(cfg.DataDir, 0o700)
-			os.WriteFile(filepath.Join(cfg.DataDir, "autostop.json"), []byte("{"), 0o600)
+		"corrupt scheduler state": func(t *testing.T, cfg *config.Config) {
+			must(t, os.MkdirAll(cfg.DataDir, 0o700))
+			must(t, os.WriteFile(filepath.Join(cfg.DataDir, "autostop.json"), []byte("{"), 0o600))
 		},
-		"address already in use": func(cfg *config.Config) {
+		"address already in use": func(t *testing.T, cfg *config.Config) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { ln.Close() })
+			t.Cleanup(func() { _ = ln.Close() })
 			cfg.ListenAddr = ln.Addr().String()
 		},
 	}
@@ -182,7 +183,7 @@ func TestRun_startupFailures(t *testing.T) {
 	for name, breakCfg := range tests {
 		t.Run(name, func(t *testing.T) {
 			cfg := testConfig(t, iss.URL)
-			breakCfg(cfg)
+			breakCfg(t, cfg)
 			if err := run(context.Background(), cfg); err == nil {
 				t.Error("expected run to fail")
 			}
@@ -196,19 +197,7 @@ func TestNewMux_routingAndAllowlist(t *testing.T) {
 	cfg.AllowedIPs = []*net.IPNet{allowed}
 
 	reg := claimStack(t, cfg.DataDir, "group-app", "staging", "1")
-	sched, err := scheduler.Load(cfg.DataDir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Fake auth: accepts every request and injects a fixed identity.
-	auth := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims := &middleware.Claims{ProjectPath: "group/app", ProjectID: "1", Environment: "staging"}
-			next.ServeHTTP(w, r.WithContext(middleware.ContextWithClaims(r.Context(), claims)))
-		})
-	}
-	mux := newMux(cfg, auth, slog.New(slog.DiscardHandler), reg, sched)
+	mux := testMux(t, cfg, reg, staticAuth(&middleware.Claims{ProjectPath: "group/app", ProjectID: "1", Environment: "staging"}))
 
 	testutil.FakeDocker(t)
 	tests := []struct {
@@ -310,6 +299,7 @@ func TestRunMain_failuresExitNonZeroWithJSONLog(t *testing.T) {
 	notOIDC.StartTLS()
 	defer notOIDC.Close()
 
+	//goland:noinspection HttpUrlsUsage
 	tests := []struct {
 		name    string
 		env     map[string]string
@@ -346,10 +336,6 @@ func TestNewMux_authorisationOnEveryEndpoint(t *testing.T) {
 	cfg.AllowedNamespaces = []string{"apps/atmosphere"}
 
 	reg := claimStack(t, cfg.DataDir, "apps-atmosphere-api-app", "production", "1")
-	sched, err := scheduler.Load(cfg.DataDir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	var claims *middleware.Claims
 	auth := func(next http.Handler) http.Handler {
@@ -357,7 +343,7 @@ func TestNewMux_authorisationOnEveryEndpoint(t *testing.T) {
 			next.ServeHTTP(w, r.WithContext(middleware.ContextWithClaims(r.Context(), claims)))
 		})
 	}
-	mux := newMux(cfg, auth, slog.New(slog.DiscardHandler), reg, sched)
+	mux := testMux(t, cfg, reg, auth)
 	testutil.FakeDocker(t)
 
 	no := false
@@ -414,6 +400,7 @@ func TestRunMain_arguments(t *testing.T) {
 		wantCode int
 	}{
 		{"help", []string{"-h"}, 0},
+		{"version", []string{"-version"}, 0},
 		{"unknown flag", []string{"-nope"}, 2},
 		{"positional argument", []string{"extra"}, 2},
 		{"missing flag value", []string{"-import-registry"}, 2},
@@ -430,7 +417,7 @@ func TestRunMain_arguments(t *testing.T) {
 func TestRunMain_importRegistry(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state") // created by the import
 	legacy := filepath.Join(t.TempDir(), "legacy.json")
-	os.WriteFile(legacy, []byte(`{"group-app-staging":{"project_id":"42","project_path":"group/app","environment":"staging"},"other-production":"7"}`), 0o600)
+	must(t, os.WriteFile(legacy, []byte(`{"group-app-staging":{"project_id":"42","project_path":"group/app","environment":"staging"},"other-production":"7"}`), 0o600))
 
 	// Only DATA_DIR is needed: the OIDC settings are not required offline.
 	env := map[string]string{"DATA_DIR": dataDir, "GITLAB_ISSUER": "", "GITLAB_AUDIENCE": ""}
@@ -453,7 +440,7 @@ func TestRunMain_importRegistry(t *testing.T) {
 
 	// A conflicting owner aborts the import: exit 1, registry unchanged.
 	conflict := filepath.Join(t.TempDir(), "conflict.json")
-	os.WriteFile(conflict, []byte(`{"group-app-staging":"99"}`), 0o600)
+	must(t, os.WriteFile(conflict, []byte(`{"group-app-staging":"99"}`), 0o600))
 	if code, _ := runMainOutput(t, []string{"-import-registry", conflict}, env); code != 1 {
 		t.Errorf("conflicting import: exit code = %d, want 1", code)
 	}
@@ -484,7 +471,7 @@ func TestRunMain_importRegistry(t *testing.T) {
 func corruptRegistryDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "registry.json"), []byte("{"), 0o600)
+	must(t, os.WriteFile(filepath.Join(dir, "registry.json"), []byte("{"), 0o600))
 	return dir
 }
 
@@ -523,17 +510,7 @@ func TestNewMux_deployPolicyIsConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sched, err := scheduler.Load(cfg.DataDir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	auth := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims := &middleware.Claims{ProjectPath: "group/app", ProjectID: "1", Environment: "staging"}
-			next.ServeHTTP(w, r.WithContext(middleware.ContextWithClaims(r.Context(), claims)))
-		})
-	}
-	mux := newMux(cfg, auth, slog.New(slog.DiscardHandler), reg, sched)
+	mux := testMux(t, cfg, reg, staticAuth(&middleware.Claims{ProjectPath: "group/app", ProjectID: "1", Environment: "staging"}))
 
 	tests := []struct {
 		name, compose string
@@ -555,8 +532,10 @@ func TestNewMux_deployPolicyIsConfigured(t *testing.T) {
 			var body bytes.Buffer
 			mw := multipart.NewWriter(&body)
 			part, _ := mw.CreateFormFile("compose_file", "docker-compose.yml")
-			io.WriteString(part, tc.compose)
-			mw.Close()
+			if _, err := io.WriteString(part, tc.compose); err != nil {
+				t.Fatal(err)
+			}
+			must(t, mw.Close())
 			r := httptest.NewRequest("POST", "/deploy", &body)
 			r.Header.Set("Content-Type", mw.FormDataContentType())
 
@@ -567,4 +546,31 @@ func TestNewMux_deployPolicyIsConfigured(t *testing.T) {
 			}
 		})
 	}
+}
+
+// must fails the test immediately when err is not nil.
+func must(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// staticAuth is a fake auth middleware: it accepts every request and injects
+// claims as the caller identity.
+func staticAuth(claims *middleware.Claims) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(middleware.ContextWithClaims(r.Context(), claims)))
+		})
+	}
+}
+
+// testMux builds the server mux around reg, with a fresh scheduler stored in
+// cfg.DataDir and the given fake auth middleware.
+func testMux(t *testing.T, cfg *config.Config, reg *registry.Registry, auth func(http.Handler) http.Handler) *http.ServeMux {
+	t.Helper()
+	sched, err := scheduler.Load(cfg.DataDir, nil)
+	must(t, err)
+	return newMux(cfg, auth, slog.New(slog.DiscardHandler), reg, sched)
 }

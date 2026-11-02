@@ -41,6 +41,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"deploy-server/internal/atomicfile"
 )
 
 const (
@@ -306,58 +308,8 @@ func (s *Scheduler) flush() error {
 		return fmt.Errorf("scheduler: marshal: %w", err)
 	}
 
-	if err := writeFileAtomic(s.path, raw); err != nil {
+	if err := atomicfile.WriteFile(s.path, raw, 0o600); err != nil {
 		return fmt.Errorf("scheduler: %w", err)
-	}
-	return nil
-}
-
-// writeFileAtomic replaces path with data durably: it writes a temp file in
-// the same directory, fsyncs it, renames it over path and fsyncs the
-// directory so the rename itself survives a crash.
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	committed := false
-	defer func() {
-		if !committed {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", tmpName, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("fsync %s: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename to %s: %w", path, err)
-	}
-	committed = true
-
-	// The new content is now visible; a failing directory fsync only weakens
-	// crash durability, so it is logged rather than reported.
-	if d, err := os.Open(dir); err != nil {
-		slog.Warn("scheduler: open state dir for fsync", "dir", dir, "error", err)
-	} else {
-		if err := d.Sync(); err != nil {
-			slog.Warn("scheduler: fsync state dir", "dir", dir, "error", err)
-		}
-		d.Close()
 	}
 	return nil
 }

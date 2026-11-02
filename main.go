@@ -71,6 +71,10 @@ const (
 	maxHeaderBytes = 64 << 10
 )
 
+// version is the release tag (e.g. v1.0.0) set at build time with
+// -ldflags "-X main.version=…"; "dev" for local builds.
+var version = "dev"
+
 func main() {
 	os.Exit(runMain(os.Args[1:], os.Stderr))
 }
@@ -85,6 +89,7 @@ func runMain(args []string, logOut io.Writer) int {
 	fs := flag.NewFlagSet("deploy-server", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors are logged as JSON below
 	importFile := fs.String("import-registry", "", "merge this JSON file (registry.json format) into DATA_DIR's ownership registry, then exit")
+	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(os.Stderr)
@@ -98,6 +103,10 @@ func runMain(args []string, logOut io.Writer) int {
 		slog.Error("invalid arguments", "error", fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 		return 2
 	}
+	if *showVersion {
+		fmt.Fprintln(os.Stdout, "deploy-server "+version)
+		return 0
+	}
 	if *importFile != "" {
 		return importRegistry(config.DataDirFromEnv(), *importFile)
 	}
@@ -107,6 +116,7 @@ func runMain(args []string, logOut io.Writer) int {
 		slog.Error("invalid configuration", "error", err)
 		return 1
 	}
+	slog.Info("deploy-server starting", "version", version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

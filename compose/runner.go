@@ -64,9 +64,22 @@ type Stack struct {
 }
 
 // Output holds captured stdout and stderr from a compose command.
+//
+// Every function of this package that returns an *Output returns a non-nil
+// one, even alongside an error (it is then empty or holds whatever the
+// command printed before failing). Callers may still use StderrOf to read it
+// nil-safely.
 type Output struct {
 	Stdout string
 	Stderr string
+}
+
+// StderrOf returns o.Stderr, or "" when o is nil.
+func StderrOf(o *Output) string {
+	if o == nil {
+		return ""
+	}
+	return o.Stderr
 }
 
 // Pull runs: docker compose -p <key> --project-directory <dir> -f <file> pull
@@ -130,7 +143,7 @@ func run(waitCtx, runCtx context.Context, timeout time.Duration, s Stack, subArg
 // runDocker runs `docker <args...>`. It waits for a free slot using waitCtx,
 // then runs the command under runCtx bounded by timeout. name prefixes the
 // returned errors (e.g. "docker compose pull", "docker ps"). The returned
-// *Output is never nil.
+// *Output is never nil, whether or not an error is returned.
 func runDocker(waitCtx, runCtx context.Context, timeout time.Duration, name string, args []string) (*Output, error) {
 	// Never start a command for a request that is already gone (select would
 	// otherwise pick a free slot or Done at random).
