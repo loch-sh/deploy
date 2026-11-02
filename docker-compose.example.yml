@@ -1,0 +1,265 @@
+# Example docker-compose.yml for running deploy-server behind Traefik.
+#
+# Topology
+# --------
+#
+#   Internet ──:80/:443──▶ traefik ──(network "web", shared)──▶ tenant stacks
+#            └─:8443────▶   │
+#                           ├──(network "deploy-internal", 172.31.250.0/29)──▶ deploy-server
+#                           └──(network "socket-proxy", internal)──▶ docker-socket-proxy ──▶ /var/run/docker.sock
+#
+#   * Tenant stacks (deployed BY deploy-server) only ever join the shared
+#     external network "web" (ALLOWED_EXTERNAL_NETWORKS). They can neither join
+#     "deploy-internal" nor "socket-proxy": the compose policy only allows
+#     external networks from that allowlist, and every other network name must
+#     be prefixed with the stack key.
+#   * The deploy-server route is NOT declared with Docker labels. Traefik's
+#     Docker provider reads the labels of every container on the host,
+#     including tenant containers, so it is only used for tenant routing. The
+#     deploy-server router lives in the file provider (see `configs:` at the
+#     bottom), on its own entrypoint (:8443), and points at a fixed IP, so it
+#     cannot be shadowed by a tenant container name or label.
+#   * FORBIDDEN_TRAEFIK_HOSTS additionally makes the policy refuse any tenant
+#     router whose Host() names the deploy-server (or GitLab).
+#   * Traefik reads the Docker API through a filtering proxy that only exposes
+#     read-only container endpoints, never the raw socket.
+#
+# Prerequisites
+#   docker network create web          # the shared network tenant stacks join
+#
+# Usage:
+#   cp docker-compose.example.yml docker-compose.yml
+#   # Replace deploy.example.com / gitlab.example.com / IPs / namespaces below
+#   docker compose up -d
+#
+# Requires Docker Compose >= 2.23.1 (inline `configs.content`).
+
+services:
+
+  # ── deploy-server ──────────────────────────────────────────────────────────
+  deploy-server:
+    image: deploy-server:latest          # build with: docker build -t deploy-server .
+    # build: .                           # uncomment to build locally instead
+    restart: unless-stopped
+
+    environment:
+      # Never published on the host: only Traefik reaches it, over
+      # deploy-internal. Do not add a `ports:` section.
+      LISTEN_ADDR: ":8080"
+      COMPOSE_BASE: "/data/compose"
+      WEBSITES_BASE: "/data/websites"
+      DATA_DIR: "/app/data"
+      MAX_UPLOAD_MB: "20"
+      # Authentication is delegated to GitLab OIDC — both are REQUIRED.
+      GITLAB_ISSUER: "https://gitlab.example.com"   # your GitLab instance URL
+      GITLAB_AUDIENCE: "https://deploy.example.com" # must match id_tokens aud in .gitlab-ci.yml
+      # PROTECTED_ENVS: "production"     # envs requiring a protected branch/tag (default: production)
+
+      # Only projects under these GitLab groups/namespaces may deploy (prefix
+      # match on path segments: "apps/atmosphere" allows
+      # "apps/atmosphere/api", not "apps/atmosphere-evil"). Empty = every
+      # project of the GitLab instance — do not leave it empty on a shared
+      # GitLab.
+      ALLOWED_NAMESPACES: "apps/atmosphere,infra"
+
+      # Host names no tenant stack may claim in a Traefik Host() rule: at least
+      # this server's own public host, plus GitLab's if Traefik also fronts it.
+      FORBIDDEN_TRAEFIK_HOSTS: "deploy.example.com,gitlab.example.com"
+
+      # External networks tenant stacks may join with `external: true`: only
+      # Traefik's shared network. Never list "deploy-internal" or
+      # "socket-proxy" here.
+      ALLOWED_EXTERNAL_NETWORKS: "web"
+
+      # Network allowlist (defence in depth). Only these client IPs are served;
+      # /health is always exempt.
+      ALLOWED_IPS: "203.0.113.10"        # the GitLab server / CI-runner egress IP(s)
+      # The ONLY address allowed to set X-Forwarded-For: Traefik's fixed IP on
+      # deploy-internal (see ipv4_address below). Never a whole Docker range
+      # such as 172.16.0.0/12, which would also trust tenant containers.
+      TRUSTED_PROXIES: "172.31.250.2"
+
+    volumes:
+      # Server state (registry.json, autostop.json)
+      - ./data:/app/data
+
+      # Docker socket — required so the server can run `docker compose` commands
+      # on the host daemon. It cannot go through the socket proxy: compose needs
+      # write access to containers, networks, volumes and images.
+      # Security note: this grants root-equivalent access to the host. A `:ro`
+      # flag would NOT help (it only covers the socket inode, not the API
+      # behind it), so it is deliberately omitted. See SECURITY.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Compose stacks directory — must be the same path inside and outside the
+      # container so that `docker compose -f <path>` resolves correctly on the host.
+      # Deploys are staged in COMPOSE_BASE/.staging-* (same volume), which is
+      # why the root filesystem can stay read-only.
+      - /data/compose:/data/compose
+
+      # Bind-mount website data — kept separate from compose dirs so auto-stop
+      # can delete the compose dir without touching application data. Same path
+      # inside and outside too: the policy checks bind sources against
+      # WEBSITES_BASE/<stack key>/ and the daemon resolves them on the host.
+      - /data/websites:/data/websites
+
+      # Private registries: compose forwards the client credentials to the
+      # daemon. Mount a docker config read-only if stacks pull private images.
+      # - /root/.docker/config.json:/root/.docker/config.json:ro
+
+    networks:
+      deploy-internal:
+        ipv4_address: 172.31.250.3     # referenced by the file-provider route
+
+    # ── Container hardening ──────────────────────────────────────────────────
+    # The server stays root by design (socket access, chown of bind dirs), but
+    # with only the capabilities it uses:
+    #   CHOWN        — POST /directories sets uid/gid
+    #   FOWNER       — chmod of directories already owned by another uid
+    #   DAC_OVERRIDE — create/remove entries in directories owned by another
+    #                  uid (e.g. 0750 1000:1000 bind dirs, auto-stop cleanup)
+    # The docker CLI and compose plugin are plain API clients over the socket
+    # and need no capability.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 512m
+    pids_limit: 512                    # docker compose subprocesses are multi-threaded
+    # The server waits up to 30 s for in-flight requests on SIGTERM.
+    stop_grace_period: 40s
+    # Healthcheck: defined in the Dockerfile (GET /health).
+
+  # ── Traefik ────────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.7.15@sha256:0f6150202bc1fed72a7bd2107460eaa510e5b8a905f3fdb5b84f2c8619c33368
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
+    command:
+      # Docker provider — tenant stacks only. It talks to the socket proxy,
+      # never to the raw socket.
+      - "--providers.docker.endpoint=tcp://docker-socket-proxy:2375"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=web"
+      # File provider — the deploy-server route (see configs below).
+      - "--providers.file.filename=/etc/traefik/dynamic/deploy-server.yml"
+
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      # Dedicated entrypoint for the deploy API. Tenant routers that do not
+      # name an entrypoint only attach to the `asDefault` ones (web,
+      # websecure). Firewall :8443 down to the CI-runner IPs on the host.
+      - "--entrypoints.deploy.address=:8443"
+      - "--entrypoints.web.asDefault=true"
+      - "--entrypoints.websecure.asDefault=true"
+
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      # Uncomment for staging ACME (avoids rate limits during testing):
+      # - "--certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    configs:
+      - source: traefik-deploy-server
+        target: /etc/traefik/dynamic/deploy-server.yml
+    volumes:
+      - traefik-certs:/letsencrypt
+    networks:
+      web: {}
+      deploy-internal:
+        ipv4_address: 172.31.250.2     # = TRUSTED_PROXIES of deploy-server
+      socket-proxy: {}
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]        # binds :80/:443 as root
+    security_opt:
+      - "no-new-privileges:true"
+    # Not read_only: compose writes the inline `configs` content into the
+    # container at creation, which it refuses for read-only services. To make
+    # Traefik read-only, write the dynamic file on the host and bind-mount it
+    # instead (`- ./traefik/deploy-server.yml:/etc/traefik/dynamic/deploy-server.yml:ro`).
+
+  # ── Docker socket proxy (read-only API for Traefik) ────────────────────────
+  # Only GET/HEAD on /containers (plus the default /_ping, /version and
+  # /events) are forwarded; every write (POST/PUT/DELETE) is refused.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      POST: "0"
+    volumes:
+      # Same caveat as above: `:ro` does not make the Docker API read-only —
+      # the proxy's endpoint filtering does. It is kept only because the proxy
+      # never needs to modify the socket file itself.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy                   # reachable by Traefik only, no ports
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp                           # the entrypoint renders /tmp/haproxy.cfg
+    security_opt:
+      - "no-new-privileges:true"
+
+networks:
+  # Shared network: Traefik + tenant stacks (external: true in their compose
+  # files, allowed through ALLOWED_EXTERNAL_NETWORKS). Created beforehand.
+  web:
+    external: true
+
+  # Traefik ↔ deploy-server only. Fixed subnet so TRUSTED_PROXIES and the
+  # file-provider URL can name exact addresses. Not `internal: true`: the
+  # server must reach GITLAB_ISSUER to fetch the OIDC keys (JWKS).
+  deploy-internal:
+    name: deploy-internal
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.250.0/29      # pick a range free on your host
+
+  # Traefik ↔ socket proxy only, no outbound access.
+  socket-proxy:
+    name: socket-proxy
+    internal: true
+
+configs:
+  # Dynamic configuration of the deploy-server route, served by Traefik's file
+  # provider. Tenant containers cannot alter it (they only feed the Docker
+  # provider), and its names live in the @file namespace.
+  traefik-deploy-server:
+    content: |
+      http:
+        routers:
+          deploy-server:
+            rule: "Host(`deploy.example.com`)"
+            entryPoints: [deploy]
+            service: deploy-server
+            middlewares: [deploy-server-ci-allowlist]
+            tls:
+              certResolver: letsencrypt
+        middlewares:
+          # Defence in depth, evaluated by Traefik on the real peer address;
+          # keep it in sync with ALLOWED_IPS.
+          deploy-server-ci-allowlist:
+            ipAllowList:
+              sourceRange: ["203.0.113.10"]
+        services:
+          deploy-server:
+            loadBalancer:
+              servers:
+                # Fixed IP, not the service name: a tenant service called
+                # "deploy-server" on the shared "web" network would otherwise
+                # be a DNS candidate for that name.
+                - url: "http://172.31.250.3:8080"
+
+volumes:
+  traefik-certs:

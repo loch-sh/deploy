@@ -1,0 +1,408 @@
+# Example .gitlab-ci.yml adapted from the legacy SSH workflow to deploy-server
+# (HTTP + GitLab OIDC).
+#
+# What changed vs the SSH version
+# --------------------------------
+#   * No SSH / scp / ssh-agent, no SSH_KEY, no DEPLOY_TOKEN, no DEPLOY_ID.
+#   * Each job that talks to deploy-server requests a short-lived OIDC token via
+#     `id_tokens` and sends it as `Authorization: Bearer`.
+#   * namespace/environment are NOT sent — the server derives them from the
+#     token's project_path + environment claims. So every such job MUST declare
+#     an `environment:` block (the deploy/stop ones already do).
+#   * Bind-mount directories are created through POST /directories instead of
+#     `ssh mkdir + chown`. The API layout is {service}/{name}, so paths now carry
+#     a service segment: e.g. the old .../<slug>/jwt becomes .../<slug>/api/jwt.
+#     >>> Update the bind-mount source paths in your docker-compose.yml / template
+#         accordingly (see the mapping in the `directories` step below).
+#   * Directories are created BEFORE `compose up`, so containers start with the
+#     correct ownership already in place (the old flow chowned afterwards).
+#   * Switching an environment over: stop the stack deployed by the SSH flow
+#     first (stop job = DELETE /stack, after the stack was imported into the
+#     server's registry), move its data to <key>/<service>/<name>, then deploy.
+#     While containers started by the SSH flow still mount <key>/,
+#     <key>/<service>/ or a host path, /deploy is refused with HTTP 409 listing
+#     them. Full procedure: "Migration runbook" in the deploy-server README.
+#
+#   * Secrets (API_ENV / DOLIBARR_ENV) are decoded inside the deploy job and
+#     uploaded directly: they are never published as job artifacts.
+#
+# Prerequisites on the deploy-server side:
+#   GITLAB_AUDIENCE must equal the `aud` below.
+#   ALLOWED_IPS must include this pipeline's runner egress IP(s).
+#   ALLOWED_NAMESPACES must contain this project's group (or a parent group).
+#   ALLOWED_EXTERNAL_NETWORKS must contain "web" (Traefik's shared network).
+#
+# Compose policy — what the rendered docker-compose.yml may contain
+# -----------------------------------------------------------------
+# The server renders the file with `docker compose config` and rejects it
+# (HTTP 400, with the list of violations) unless it follows these rules.
+# <key> is "<CI_PROJECT_PATH_SLUG>-<environment slug>", e.g.
+# "apps-atmosphere-shop-staging" ($STACK_KEY below).
+#   * No build:, privileged, cap_add, devices, pid/ipc/uts/userns host modes,
+#     security_opt, sysctls, extends, include, label_file, external_links…
+#   * network_mode only none / bridge / service:<name>.
+#   * Networks: own networks are created by compose (an explicit `name:` must
+#     start with "<key>_"); the only external network allowed is "web".
+#   * Volumes: named volumes (explicit `name:` must start with "<key>_", never
+#     external, local driver only), or bind mounts whose source is EXACTLY
+#     WEBSITES_BASE/<key>/<service>/<name> — a directory created by
+#     POST /directories (step 1 below) before the deploy. Not <key>/ or
+#     <key>/<service>/ themselves, nothing deeper, no single file, no symlink
+#     on the way; absolute, clean paths only (no trailing "/").
+#   * container_name absent (recommended) or starting with "<key>-".
+#   * env_file / configs / secrets: only plain names of files uploaded with
+#     the deploy (here api.env, dolibarr.env).
+#   * Traefik labels: every router rule restricted to explicit Host() names
+#     (no PathPrefix-only rule, no negation), never the deploy-server host;
+#     no `.priority`, no traefik.tcp.* / traefik.udp.*. No com.docker.compose.*
+#     labels.
+#
+# Minimal compliant service, as compose.yml.j2 should render it:
+#
+#   services:
+#     api:
+#       image: registry.example.com/atmosphere/api:1.4.2
+#       env_file: [api.env]
+#       volumes:
+#         - /data/websites/apps-atmosphere-shop-staging/api/storage:/app/storage
+#         - api_cache:/app/var/cache
+#       networks: [default, web]
+#       labels:
+#         - "traefik.enable=true"
+#         - "traefik.http.routers.apps-atmosphere-shop-staging-api.rule=Host(`api.staging.example.com`)"
+#         - "traefik.http.routers.apps-atmosphere-shop-staging-api.entrypoints=websecure"
+#         - "traefik.http.routers.apps-atmosphere-shop-staging-api.tls.certresolver=letsencrypt"
+#         - "traefik.http.services.apps-atmosphere-shop-staging-api.loadbalancer.server.port=8080"
+#   volumes:
+#     api_cache: {}            # becomes <key>_api_cache
+#   networks:
+#     web:
+#       external: true
+#
+# Router/service names are global in Traefik's Docker provider: prefix them
+# with the stack key so two stacks never collide.
+
+spec:
+  inputs:
+    catalog_project_path:
+      type: string
+      default: "templates-ci-cd/catalog-atmosphere"
+      description: "Chemin GitLab du projet catalog"
+    catalog_ref:
+      type: string
+      default: "main"
+      description: "Référence (tag/branche) pour le téléchargement des scripts"
+---
+stages:
+  - build
+  - deploy
+  - backup
+  - restore
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "staging"
+    - if: $CI_COMMIT_BRANCH == "recette"
+    - if: $CI_COMMIT_BRANCH == "production"
+
+variables:
+  # Must match the server's GITLAB_AUDIENCE (an identifier, not necessarily the
+  # URL actually called).
+  DEPLOY_AUD: "https://deploy.example.com"
+  # Base URL of the deploy-server: its dedicated Traefik entrypoint (:8443,
+  # see docker-compose.example.yml).
+  DEPLOY_URL: "https://deploy.example.com:8443"
+  # Stack key computed by the server from the token claims (project path slug
+  # + environment slug). Here the environment name is the branch name, which is
+  # already a slug. Used by the compose template for bind-mount sources.
+  STACK_KEY: "${CI_PROJECT_PATH_SLUG}-${CI_COMMIT_BRANCH}"
+  # Must match the server's WEBSITES_BASE.
+  WEBSITES_BASE: "/data/websites"
+  RECETTE_AUTO_STOP_DAYS:
+    value: "15"
+    options:
+      - "15"
+      - "30"
+      - "60"
+      - "90"
+    description: "Durée (en jours) avant arrêt automatique de l'environnement recette"
+
+# ── Reusable token block ──────────────────────────────────────────────────────
+# Every job that calls deploy-server includes this so $DEPLOY_JWT is minted.
+.id-token: &id_token
+  id_tokens:
+    DEPLOY_JWT:
+      aud: "$DEPLOY_AUD"
+
+# ── Deploy: create bind dirs, then bring the stack up ─────────────────────────
+# The server reads namespace (= CI_PROJECT_PATH_SLUG) and environment from the
+# token, so only files + directory metadata are sent.
+.default-deploy-script: &default_deploy_script
+  # Stamp the compose file with deploy provenance (kept from the SSH flow).
+  # No e-mail address: this header is stored on the deploy host's disk, so it
+  # carries no personal data beyond the GitLab login; the job URL gives the
+  # full trace.
+  - echo "# Automated deploy at $CI_JOB_STARTED_AT by $GITLAB_USER_LOGIN ($CI_JOB_URL) using Commit $CI_COMMIT_SHORT_SHA - Branch $CI_COMMIT_BRANCH" | cat - docker-compose.yml > docker-compose.with-sha.yml
+  - mv docker-compose.with-sha.yml docker-compose.yml
+  # Decode the runtime env files HERE, in the job that uploads them, instead of
+  # in a separate job publishing them as artifacts: job artifacts can be
+  # downloaded by project members (Reporter and up on private projects, anyone
+  # on public ones) for as long as they are kept. Trade-off: the variables are
+  # exposed to this job only, and the files live only in its workspace (which
+  # the runner wipes). If they ever have to come from another job, publish
+  # them with `artifacts: { expire_in: 10 min, access: developer }` and fetch
+  # them with `needs: [{ job: …, artifacts: true }]` in the consumer only.
+  - echo "$API_ENV" | base64 -d > api.env
+  - echo "$DOLIBARR_ENV" | base64 -d > dolibarr.env
+  # 1) Create bind-mount directories with correct ownership BEFORE compose up.
+  #    user/group are numeric uid/gid only (names are refused: they would be
+  #    resolved against the deploy-server container's /etc/passwd, not the
+  #    images'). mode is optional, octal, at most 0777.
+  #    Mapping from the legacy SSH chown commands:
+  #      api/jwt, api/log, api/storage   -> 1000:1000   (was <slug>/jwt|log|storage)
+  #      dolibarr/documents              -> 33:33       (was <slug>/documents)
+  #      influx/data, influx/plugins     -> 1500:1500
+  #      mercure/data, mercure/config    -> default owner
+  - |
+    curl -sS --fail-with-body -X POST \
+      -H "Authorization: Bearer $DEPLOY_JWT" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "entries": [
+          {"service":"api","name":"jwt","user":"1000","group":"1000","mode":"0750"},
+          {"service":"api","name":"log","user":"1000","group":"1000"},
+          {"service":"api","name":"storage","user":"1000","group":"1000"},
+          {"service":"dolibarr","name":"documents","user":"33","group":"33"},
+          {"service":"influx","name":"data","user":"1500","group":"1500"},
+          {"service":"influx","name":"plugins","user":"1500","group":"1500"},
+          {"service":"mercure","name":"data"},
+          {"service":"mercure","name":"config"}
+        ]
+      }' \
+      "$DEPLOY_URL/directories"
+  # 2) Upload the stack and run `docker compose pull && up`.
+  #    AUTO_STOP_DAYS is optional and set per-environment below.
+  #    --fail-with-body: on a 400 the policy violations are printed in the job
+  #    log while the job still fails (plain -f would hide them).
+  - |
+    curl -sS --fail-with-body -X POST \
+      -H "Authorization: Bearer $DEPLOY_JWT" \
+      -F "compose_file=@docker-compose.yml" \
+      -F "env_files[]=@api.env" \
+      -F "env_files[]=@dolibarr.env" \
+      ${AUTO_STOP_DAYS:+-F auto_stop_days=$AUTO_STOP_DAYS} \
+      "$DEPLOY_URL/deploy"
+
+# ── Stop: tear the stack down ─────────────────────────────────────────────────
+.default-stop-script: &default_stop_script
+  - curl -sS --fail-with-body -X DELETE -H "Authorization: Bearer $DEPLOY_JWT" "$DEPLOY_URL/stack"
+
+.db-setup: &db_setup
+  - apk add --no-cache mysql-client tzdata mariadb-connector-c
+  - echo "$API_ENV" | base64 -d > api.env
+  - echo "$DOLIBARR_ENV" | base64 -d > dolibarr.env
+
+# ── Build stage (unchanged — no deploy host access) ───────────────────────────
+template:
+  image: python:3
+  stage: build
+  interruptible: true
+  needs: []
+  before_script:
+    - pip install Jinja2
+  script:
+    - |
+      python3 << 'FETCH_SCRIPTS'
+      import urllib.request, os, sys
+
+      api_url = os.environ['CI_API_V4_URL']
+      token = os.environ['CI_JOB_TOKEN']
+      project_path = '$[[ inputs.catalog_project_path ]]'.replace('/', '%2F')
+      ref = '$[[ inputs.catalog_ref ]]'
+
+      files = {
+          'templates%2Fdocker%2Fscripts%2Fbuild-template.py': '/tmp/catalog/scripts/build-template.py',
+          'templates%2Fdocker%2Fscripts%2Fcompose.yml.j2': '/tmp/catalog/compose.yml.j2',
+      }
+
+      os.makedirs('/tmp/catalog/scripts', exist_ok=True)
+
+      for src, dst in files.items():
+          url = f'{api_url}/projects/{project_path}/repository/files/{src}/raw?ref={ref}'
+          req = urllib.request.Request(url, headers={'JOB-TOKEN': token})
+          try:
+              with urllib.request.urlopen(req) as resp, open(dst, 'wb') as f:
+                  f.write(resp.read())
+              print(f'Téléchargé : {dst}')
+          except urllib.error.HTTPError as e:
+              print(f'Erreur lors du téléchargement de {src} : {e.code} {e.reason}', file=sys.stderr)
+              sys.exit(1)
+      FETCH_SCRIPTS
+    - python3 /tmp/catalog/scripts/build-template.py
+    - cat docker-compose.yml
+  artifacts:
+    paths:
+      - docker-compose.yml
+  environment:
+    name: $CI_COMMIT_BRANCH
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^(staging|recette|production)$/
+
+# (The former gen_run_env job, which published api.env / dolibarr.env as
+# artifacts, is gone: the deploy job now decodes them itself.)
+
+# ── Deploy stage ──────────────────────────────────────────────────────────────
+.deploy-base:
+  stage: deploy
+  image: alpine:3.23.6
+  <<: *id_token
+  needs:
+    - job: template
+      artifacts: true
+  before_script:
+    - apk add --no-cache curl
+  script: *default_deploy_script
+  artifacts:
+    paths:
+      - docker-compose.yml
+  environment:
+    name: $CI_COMMIT_BRANCH
+
+deploy-staging:
+  extends: .deploy-base
+  variables:
+    AUTO_STOP_DAYS: "15"
+  environment:
+    name: staging
+    auto_stop_in: 15 days
+    on_stop: stop-staging
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "staging"
+
+deploy-recette:
+  extends: .deploy-base
+  variables:
+    AUTO_STOP_DAYS: "$RECETTE_AUTO_STOP_DAYS"
+  environment:
+    name: recette
+    auto_stop_in: $RECETTE_AUTO_STOP_DAYS days
+    on_stop: stop-recette
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "recette"
+
+deploy-prod:
+  extends: .deploy-base
+  # production is a PROTECTED_ENVS entry on the server: the deploy is rejected
+  # unless this pipeline runs on a protected branch (ref_protected claim = true).
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "production"
+
+# ── Stop jobs (on_stop targets) ───────────────────────────────────────────────
+.stop-base:
+  stage: deploy
+  image: alpine:3.23.6
+  <<: *id_token
+  needs: []
+  before_script:
+    - apk add --no-cache curl
+  script: *default_stop_script
+  when: manual
+
+stop-staging:
+  extends: .stop-base
+  environment:
+    name: staging
+    action: stop
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "staging"
+      when: manual
+
+stop-recette:
+  extends: .stop-base
+  environment:
+    name: recette
+    action: stop
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "recette"
+      when: manual
+
+# ── Backup / restore ──────────────────────────────────────────────────────────
+# These talk straight to the databases — they never touched the deploy host —
+# so they are kept verbatim from the SSH version.
+backup-prod:
+  stage: backup
+  image: alpine:3.23.6
+  needs: []
+  environment:
+    name: production
+    action: prepare
+  before_script:
+    - *db_setup
+    - apk add git
+  script:
+    - |
+      if [ -z "$(git ls-remote --heads origin production)" ]; then
+        echo "La branche production n'existe pas, backup ignoré"
+        touch dolibarr.sql api.sql
+        exit 0
+      fi
+    - source dolibarr.env
+    - source api.env
+    - mariadb-dump --ssl=false --no-tablespaces -h $DOLI_DB_HOST -P 3306 -u $DOLI_DB_USER --password=$DOLI_DB_PASSWORD $DOLI_DB_NAME > dolibarr.sql
+    - |
+      DB_HOST=$(echo "$DATABASE_URL" | sed 's|mysql://[^@]*@\([^:/]*\).*|\1|')
+      DB_PORT=$(echo "$DATABASE_URL" | sed -n 's|mysql://[^@]*@[^:]*:\([0-9]*\)/.*|\1|p')
+      DB_USER=$(echo "$DATABASE_URL" | sed 's|mysql://\([^:]*\):.*|\1|')
+      DB_PASS=$(echo "$DATABASE_URL" | sed 's|mysql://[^:]*:\([^@]*\)@.*|\1|')
+      DB_NAME=$(echo "$DATABASE_URL" | sed 's|.*/\([^?]*\).*|\1|')
+      mariadb-dump --ssl=false --no-tablespaces --protocol=tcp -h "$DB_HOST" -P "${DB_PORT:-3306}" -u "$DB_USER" --password="$DB_PASS" "$DB_NAME" > api.sql
+  # Database dumps are as sensitive as the env files: keep them only long
+  # enough for restore-prod-to-staging (manual) and out of reach of Guest /
+  # Reporter members.
+  artifacts:
+    paths:
+      - dolibarr.sql
+      - api.sql
+    expire_in: 1 day
+    access: developer
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "staging"
+
+restore-prod-to-staging:
+  stage: restore
+  image: alpine:3.23.6
+  needs:
+    - backup-prod
+  environment:
+    name: staging
+  before_script: *db_setup
+  script:
+    - |
+      if [ ! -s dolibarr.sql ] || [ ! -s api.sql ]; then
+        echo "Pas de backup production disponible, restauration ignorée"
+        exit 0
+      fi
+    - source dolibarr.env
+    - source api.env
+    - mariadb --ssl=false -h $DOLI_DB_HOST -P 3306 -u $DOLI_DB_USER --password=$DOLI_DB_PASSWORD $DOLI_DB_NAME < dolibarr.sql
+    - |
+      DB_HOST=$(echo "$DATABASE_URL" | sed 's|mysql://[^@]*@\([^:/]*\).*|\1|')
+      DB_PORT=$(echo "$DATABASE_URL" | sed -n 's|mysql://[^@]*@[^:]*:\([0-9]*\)/.*|\1|p')
+      DB_USER=$(echo "$DATABASE_URL" | sed 's|mysql://\([^:]*\):.*|\1|')
+      DB_PASS=$(echo "$DATABASE_URL" | sed 's|mysql://[^:]*:\([^@]*\)@.*|\1|')
+      DB_NAME=$(echo "$DATABASE_URL" | sed 's|.*/\([^?]*\).*|\1|')
+      mariadb --ssl=false --protocol=tcp -h "$DB_HOST" -P "${DB_PORT:-3306}" -u "$DB_USER" --password="$DB_PASS" "$DB_NAME" < api.sql
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "staging"
+  when: manual
+
+# NOTE — restore-prod-files-to-staging (copying Dolibarr documents between the
+# production and staging bind mounts) was a host-level `ssh cp` operation. It has
+# no direct deploy-server endpoint, by design: cross-environment host file access
+# is exactly what this server removes. Options if you still need it:
+#   * Run the copy from inside a container that mounts both trees, triggered via
+#     POST /exec (e.g. a maintenance service with read access to ../production).
+#   * Keep it as a separate, tightly-scoped job outside this pipeline.
+# It is intentionally omitted here.

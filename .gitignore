@@ -1,0 +1,25 @@
+# IDE / OS
+.idea
+.DS_Store
+
+# Runtime state (registry.json, autostop.json) — see DATA_DIR
+/data/
+
+# Build and test artefacts
+/deploy-server
+*.test
+*.out
+coverage.*
+
+# Local deployment files (copied from docker-compose.example.yml, may hold real hosts/IPs)
+/docker-compose.yml
+/docker-compose.override.yml
+/compose.yml
+/compose.override.yml
+
+# Env files (api.env, dolibarr.env, .env…) always hold secrets
+.env
+*.env
+
+# Legacy registry import files (-import-registry) list real project paths
+/legacy*.json

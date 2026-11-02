@@ -1,0 +1,30 @@
+# Only the Go sources, go.mod and go.sum are needed to build the image.
+# Patterns are anchored at the context root: use **/ to match in subdirectories.
+
+# VCS / IDE / OS
+.git
+.gitignore
+.dockerignore
+.idea
+**/.DS_Store
+
+# Runtime state and local deployment files (may hold real hosts/IPs/secrets)
+data/
+docker-compose*.yml
+**/.env
+**/*.env
+
+# Docs, examples and build files
+**/*.md
+examples/
+Dockerfile
+
+# Tests and test doubles (never compiled into the binary)
+**/*_test.go
+internal/testutil/
+
+# Build and test artefacts
+deploy-server
+**/*.test
+**/*.out
+**/coverage.*
