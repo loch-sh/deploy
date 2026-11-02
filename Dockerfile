@@ -8,7 +8,7 @@
 # packages cannot be pinned durably (old revisions leave the repository) and
 # lag behind upstream. Both binaries are statically linked.
 # docker 29.9.0 ships Docker Compose v5.6.0 (checked with `docker compose version`).
-FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00 AS dockercli
+FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS dockercli
 
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS builder
