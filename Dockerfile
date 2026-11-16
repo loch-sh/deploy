@@ -31,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # Alpine is used (rather than scratch/distroless) because the server spawns
 # the docker CLI as a subprocess and needs PATH lookup, and the healthcheck
 # below needs busybox wget. Same Alpine branch as the CI example (3.23).
-FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # `docker` client and the `docker compose` plugin the server invokes for stack
 # management. buildx is deliberately not installed: stacks are started with
